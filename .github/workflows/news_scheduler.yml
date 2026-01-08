@@ -2,14 +2,13 @@ name: 뉴스 봇 스케줄러
 
 on:
   schedule:
-    # 15분마다 실행 (Cron 형식: 분 시 일 월 요일)
-    - cron: '*/15 * * * *'
-  workflow_dispatch:  # 수동 실행도 가능하도록 설정
+    - cron: '*/15 * * * *'  # 15분마다 실행
+  workflow_dispatch:  # 수동 실행 버튼 활성화
 
 jobs:
   send-news:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: 저장소 체크아웃
         uses: actions/checkout@v3
@@ -17,11 +16,11 @@ jobs:
       - name: Python 설정
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: '3.9'
       
-      - name: 의존성 설치
+      - name: 라이브러리 설치
         run: |
-          pip install -r requirements.txt
+          pip install requests feedparser schedule
       
       - name: 뉴스 봇 실행
         env:
@@ -29,4 +28,3 @@ jobs:
           CHAT_ID: ${{ secrets.CHAT_ID }}
           KEYWORD: ${{ secrets.KEYWORD }}
         run: python main.py
-
