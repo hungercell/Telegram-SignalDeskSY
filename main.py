@@ -134,7 +134,7 @@ def main():
     """
     # 환경변수에서 설정값 가져오기
     telegram_token = os.environ.get('TELEGRAM_TOKEN')
-    telegram_chat_id = os.environ.get('TELEGRAM_CHAT_ID')
+    telegram_chat_id = os.environ.get('CHAT_ID')
     keywords_str = os.environ.get('KEYWORD', 'Discord')  # 기본값: Discord
     
     # 필수 환경변수 확인
@@ -143,7 +143,7 @@ def main():
         return
     
     if not telegram_chat_id:
-        print("오류: TELEGRAM_CHAT_ID 환경변수가 설정되지 않았습니다.")
+        print("오류: CHAT_ID 환경변수가 설정되지 않았습니다.")
         return
     
     # KEYWORD 환경변수를 콤마(,) 기준으로 분리하여 리스트로 만들기

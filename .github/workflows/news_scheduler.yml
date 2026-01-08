@@ -26,8 +26,7 @@ jobs:
       - name: 뉴스 봇 실행
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
           KEYWORD: ${{ secrets.KEYWORD }}
-        run: |
-          python main.py
+        run: python main.py
 
