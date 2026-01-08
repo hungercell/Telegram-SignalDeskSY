@@ -98,12 +98,13 @@ def send_telegram_message(token, chat_id, message):
         print(f"텔레그램 메시지 전송 실패: {e}")
         return False
 
-def format_news_message(entry):
+def format_news_message(entry, keyword):
     """
     뉴스 항목을 텔레그램 메시지 형식으로 포맷팅합니다.
     
     Args:
         entry: feedparser 항목 객체
+        keyword: 검색 키워드 (제목에 표시용)
         
     Returns:
         포맷팅된 메시지 문자열
@@ -120,7 +121,8 @@ def format_news_message(entry):
         except:
             pass
     
-    message = f"<b>{title}</b>\n\n"
+    # 제목에 키워드 표시
+    message = f"<b>[{keyword} 뉴스] {title}</b>\n\n"
     message += f"발행 시간: {published}\n"
     message += f"링크: {link}"
     
@@ -133,7 +135,7 @@ def main():
     # 환경변수에서 설정값 가져오기
     telegram_token = os.environ.get('TELEGRAM_TOKEN')
     telegram_chat_id = os.environ.get('TELEGRAM_CHAT_ID')
-    keyword = os.environ.get('NEWS_KEYWORD', 'Discord')  # 기본값: Discord
+    keywords_str = os.environ.get('KEYWORD', 'Discord')  # 기본값: Discord
     
     # 필수 환경변수 확인
     if not telegram_token:
@@ -144,36 +146,55 @@ def main():
         print("오류: TELEGRAM_CHAT_ID 환경변수가 설정되지 않았습니다.")
         return
     
-    print(f"키워드 '{keyword}'로 뉴스를 검색합니다...")
+    # KEYWORD 환경변수를 콤마(,) 기준으로 분리하여 리스트로 만들기
+    keywords = [kw.strip() for kw in keywords_str.split(',') if kw.strip()]
     
-    # 구글 뉴스 RSS 가져오기
-    feed = get_google_news_rss(keyword)
-    
-    if not feed:
-        print("RSS 피드를 가져올 수 없습니다.")
+    if not keywords:
+        print("오류: KEYWORD 환경변수에 유효한 키워드가 없습니다.")
         return
     
-    # 최근 15분 이내 뉴스 필터링
-    recent_news = filter_recent_news(feed, minutes=15)
+    print(f"검색할 키워드: {keywords}")
     
-    if not recent_news:
-        print("최근 15분 이내 발행된 뉴스가 없습니다.")
-        return
+    # 전체 통계
+    total_success = 0
+    total_news = 0
     
-    print(f"최근 15분 이내 뉴스 {len(recent_news)}개를 찾았습니다.")
-    
-    # 각 뉴스를 텔레그램으로 전송
-    success_count = 0
-    for entry in recent_news:
-        message = format_news_message(entry)
+    # 각 키워드별로 뉴스 검색 및 전송
+    for keyword in keywords:
+        print(f"\n키워드 '{keyword}'로 뉴스를 검색합니다...")
         
-        if send_telegram_message(telegram_token, telegram_chat_id, message):
-            success_count += 1
-            print(f"뉴스 전송 성공: {entry.get('title', '제목 없음')}")
-        else:
-            print(f"뉴스 전송 실패: {entry.get('title', '제목 없음')}")
+        # 구글 뉴스 RSS 가져오기
+        feed = get_google_news_rss(keyword)
+        
+        if not feed:
+            print(f"키워드 '{keyword}': RSS 피드를 가져올 수 없습니다.")
+            continue
+        
+        # 최근 15분 이내 뉴스 필터링
+        recent_news = filter_recent_news(feed, minutes=15)
+        
+        if not recent_news:
+            print(f"키워드 '{keyword}': 최근 15분 이내 발행된 뉴스가 없습니다.")
+            continue
+        
+        print(f"키워드 '{keyword}': 최근 15분 이내 뉴스 {len(recent_news)}개를 찾았습니다.")
+        
+        # 각 뉴스를 텔레그램으로 전송
+        success_count = 0
+        for entry in recent_news:
+            message = format_news_message(entry, keyword)
+            
+            if send_telegram_message(telegram_token, telegram_chat_id, message):
+                success_count += 1
+                print(f"뉴스 전송 성공: {entry.get('title', '제목 없음')}")
+            else:
+                print(f"뉴스 전송 실패: {entry.get('title', '제목 없음')}")
+        
+        total_success += success_count
+        total_news += len(recent_news)
+        print(f"키워드 '{keyword}': {success_count}/{len(recent_news)}개 뉴스 전송 완료.")
     
-    print(f"총 {success_count}/{len(recent_news)}개 뉴스 전송 완료.")
+    print(f"\n전체 요약: 총 {total_success}/{total_news}개 뉴스 전송 완료.")
 
 if __name__ == "__main__":
     main()
