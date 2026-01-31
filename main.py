@@ -8,8 +8,10 @@ GitHub Actions에서 실행되며, 최근 15분 이내 발행된 뉴스만 전�
 import os
 import feedparser
 import requests
-from datetime import datetime, timedelta
-from time import mktime
+from urllib.parse import quote_plus
+from calendar import timegm
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 
 def get_google_news_rss(keyword):
     """
@@ -22,7 +24,8 @@ def get_google_news_rss(keyword):
         feedparser 객체
     """
     # 구글 뉴스 RSS URL (한국어 설정)
-    url = f"https://news.google.com/rss/search?q={keyword}&hl=ko&gl=KR&ceid=KR:ko"
+    encoded_keyword = quote_plus(keyword)
+    url = f"https://news.google.com/rss/search?q={encoded_keyword}&hl=ko&gl=KR&ceid=KR:ko"
     
     try:
         feed = feedparser.parse(url)
@@ -30,6 +33,28 @@ def get_google_news_rss(keyword):
     except Exception as e:
         print(f"RSS 피드 가져오기 실패: {e}")
         return None
+
+def parse_entry_time(entry):
+    """
+    RSS 항목의 발행/수정 시간을 UTC datetime으로 파싱합니다.
+    """
+    try:
+        if hasattr(entry, 'published_parsed') and entry.published_parsed:
+            return datetime.fromtimestamp(timegm(entry.published_parsed), tz=timezone.utc)
+        if hasattr(entry, 'updated_parsed') and entry.updated_parsed:
+            return datetime.fromtimestamp(timegm(entry.updated_parsed), tz=timezone.utc)
+
+        published = entry.get('published') or entry.get('updated')
+        if published:
+            parsed = parsedate_to_datetime(published)
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+    except Exception as e:
+        print(f"뉴스 항목 시간 파싱 실패: {e}")
+
+    return None
+
 
 def filter_recent_news(feed, minutes=15):
     """
@@ -46,27 +71,24 @@ def filter_recent_news(feed, minutes=15):
         return []
     
     # 현재 시간
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     # 기준 시간 (현재 시간 - N분)
     cutoff_time = now - timedelta(minutes=minutes)
     
     recent_news = []
     
     for entry in feed.entries:
-        try:
-            # RSS 항목의 발행 시간 파싱
-            # published_parsed는 struct_time 객체
-            if hasattr(entry, 'published_parsed') and entry.published_parsed:
-                # struct_time을 datetime으로 변환
-                published_time = datetime.fromtimestamp(mktime(entry.published_parsed))
-                
-                # 최근 15분 이내인지 확인
-                if published_time >= cutoff_time:
-                    recent_news.append(entry)
-        except Exception as e:
-            # 시간 파싱 실패 시 해당 항목은 건너뜀
-            print(f"뉴스 항목 시간 파싱 실패: {e}")
+        published_time = parse_entry_time(entry)
+
+        if not published_time:
+            # 시간 정보가 없는 항목은 누락 방지를 위해 포함
+            print("뉴스 항목 시간 정보 없음: 누락 방지로 포함 처리")
+            recent_news.append(entry)
             continue
+
+        # 최근 N분 이내인지 확인
+        if published_time >= cutoff_time:
+            recent_news.append(entry)
     
     return recent_news
 
@@ -113,13 +135,10 @@ def format_news_message(entry, keyword):
     link = entry.get('link', '')
     published = entry.get('published', '')
     
-    # published_parsed가 있으면 한국 시간으로 포맷팅
-    if hasattr(entry, 'published_parsed') and entry.published_parsed:
-        try:
-            published_time = datetime.fromtimestamp(mktime(entry.published_parsed))
-            published = published_time.strftime('%Y-%m-%d %H:%M:%S')
-        except:
-            pass
+    # 발행/수정 시간을 포맷팅
+    published_time = parse_entry_time(entry)
+    if published_time:
+        published = published_time.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
     
     # 제목에 키워드 표시
     message = f"<b>[{keyword} 뉴스] {title}</b>\n\n"
