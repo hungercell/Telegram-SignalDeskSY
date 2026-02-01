@@ -11,7 +11,7 @@ import html
 import requests
 import feedparser
 from urllib.parse import quote_plus
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from calendar import timegm
 
@@ -84,6 +84,8 @@ def format_digest(keyword: str, entries: list, for_telegram=False) -> str:
     safe_keyword = html.escape(keyword)
     lines = [f"🗞️ [뉴스 요약] {safe_keyword} (총 {len(entries)}건)", ""]
 
+    kst = timezone(timedelta(hours=9))
+
     for idx, entry in enumerate(entries, start=1):
         raw_title = entry.get("title", "제목 없음")
         raw_link = entry.get("link", "")
@@ -95,19 +97,19 @@ def format_digest(keyword: str, entries: list, for_telegram=False) -> str:
 
         published_time = parse_entry_time(entry)
         if published_time:
-            time_str = published_time.astimezone(timezone.utc).strftime("%H:%M")
+            time_str = published_time.astimezone(kst).strftime("%H:%M")
         else:
             time_str = "시간 미상"
 
         if for_telegram:
-            title_line = f'{idx}) <a href="{link}">{title}</a>'
+            title_line = f'{idx}) <a href="{link}">{title}</a> | {time_str}'
         else:
             safe_title = title.replace("|", "¦").replace(">", "›")
             safe_link = link.replace(">", "›")
-            title_line = f"{idx}) <{safe_link}|{safe_title}>"
+            title_line = f"{idx}) <{safe_link}|{safe_title}> | {time_str}"
 
         lines.append(title_line)
-        lines.append(f"   └ {source} | {time_str}")
+        lines.append(f"   └ {source}")
         lines.append("")
 
     return "\n".join(lines).rstrip()
