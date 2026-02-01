@@ -1,220 +1,186 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 """
-구글 뉴스 RSS를 가져와 텔레그램으로 보내는 봇
-GitHub Actions에서 실행되며, 최근 15분 이내 발행된 뉴스만 전송합니다.
+Google News RSS → 키워드별 기사 묶음
+Telegram / Slack 동일한 요약 포맷으로 전송
 """
 
 import os
-import feedparser
+import html
 import requests
+import feedparser
 from urllib.parse import quote_plus
-from calendar import timegm
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from calendar import timegm
 
-def get_google_news_rss(keyword):
-    """
-    구글 뉴스 RSS 피드를 가져옵니다.
-    
-    Args:
-        keyword: 검색할 키워드
-        
-    Returns:
-        feedparser 객체
-    """
-    # 구글 뉴스 RSS URL (한국어 설정)
-    encoded_keyword = quote_plus(keyword)
-    url = f"https://news.google.com/rss/search?q={encoded_keyword}&hl=ko&gl=KR&ceid=KR:ko"
-    
+
+# =========================
+# Slack
+# =========================
+def send_slack_message(webhook_url: str, text: str):
+    payload = {"text": text}
+    r = requests.post(webhook_url, json=payload, timeout=10)
+    r.raise_for_status()
+
+
+# =========================
+# Telegram
+# =========================
+def send_telegram_message(token: str, chat_id: str, text: str):
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }
+    r = requests.post(url, json=payload, timeout=10)
+    r.raise_for_status()
+
+
+# =========================
+# Google News RSS
+# =========================
+def get_google_news(keyword: str):
+    encoded = quote_plus(keyword)
+    url = f"https://news.google.com/rss/search?q={encoded}&hl=ko&gl=KR&ceid=KR:ko"
     try:
         feed = feedparser.parse(url)
-        return feed
-    except Exception as e:
-        print(f"RSS 피드 가져오기 실패: {e}")
-        return None
+        return feed.entries or []
+    except Exception as exc:
+        print(f"  - RSS 파싱 실패: {exc}")
+        return []
+
 
 def parse_entry_time(entry):
-    """
-    RSS 항목의 발행/수정 시간을 UTC datetime으로 파싱합니다.
-    """
     try:
-        if hasattr(entry, 'published_parsed') and entry.published_parsed:
+        if hasattr(entry, "published_parsed") and entry.published_parsed:
             return datetime.fromtimestamp(timegm(entry.published_parsed), tz=timezone.utc)
-        if hasattr(entry, 'updated_parsed') and entry.updated_parsed:
+        if hasattr(entry, "updated_parsed") and entry.updated_parsed:
             return datetime.fromtimestamp(timegm(entry.updated_parsed), tz=timezone.utc)
 
-        published = entry.get('published') or entry.get('updated')
+        published = entry.get("published") or entry.get("updated")
         if published:
             parsed = parsedate_to_datetime(published)
             if parsed.tzinfo is None:
                 return parsed.replace(tzinfo=timezone.utc)
             return parsed.astimezone(timezone.utc)
-    except Exception as e:
-        print(f"뉴스 항목 시간 파싱 실패: {e}")
-
+    except Exception:
+        pass
     return None
 
 
-def filter_recent_news(feed, minutes=15):
+# =========================
+# Unified Digest Formatter
+# =========================
+def format_digest(keyword: str, entries: list, for_telegram=False) -> str:
     """
-    최근 N분 이내에 발행된 뉴스만 필터링합니다.
-    
-    Args:
-        feed: feedparser 객체
-        minutes: 필터링할 시간(분), 기본값 15분
-        
-    Returns:
-        최근 뉴스 항목 리스트
+    동일한 논리의 메시지
+    - Slack: <url|title>
+    - Telegram: <a href="url">title</a>
     """
-    if not feed or not feed.entries:
-        return []
-    
-    # 현재 시간
-    now = datetime.now(timezone.utc)
-    # 기준 시간 (현재 시간 - N분)
-    cutoff_time = now - timedelta(minutes=minutes)
-    
-    recent_news = []
-    
-    for entry in feed.entries:
+    safe_keyword = html.escape(keyword)
+    lines = [f"🗞️ [뉴스 요약] {safe_keyword} (총 {len(entries)}건)", ""]
+
+    for idx, entry in enumerate(entries, start=1):
+        raw_title = entry.get("title", "제목 없음")
+        raw_link = entry.get("link", "")
+        raw_source = entry.get("source", {}).get("title", "출처 미상")
+
+        title = html.escape(raw_title)
+        link = raw_link
+        source = html.escape(raw_source)
+
         published_time = parse_entry_time(entry)
+        if published_time:
+            time_str = published_time.astimezone(timezone.utc).strftime("%H:%M")
+        else:
+            time_str = "시간 미상"
 
-        if not published_time:
-            # 시간 정보가 없는 항목은 누락 방지를 위해 포함
-            print("뉴스 항목 시간 정보 없음: 누락 방지로 포함 처리")
-            recent_news.append(entry)
-            continue
+        if for_telegram:
+            title_line = f'{idx}) <a href="{link}">{title}</a>'
+        else:
+            safe_title = title.replace("|", "¦").replace(">", "›")
+            safe_link = link.replace(">", "›")
+            title_line = f"{idx}) <{safe_link}|{safe_title}>"
 
-        # 최근 N분 이내인지 확인
-        if published_time >= cutoff_time:
-            recent_news.append(entry)
-    
-    return recent_news
+        lines.append(title_line)
+        lines.append(f"   └ {source} | {time_str}")
+        lines.append("")
 
-def send_telegram_message(token, chat_id, message):
-    """
-    텔레그램으로 메시지를 전송합니다.
-    
-    Args:
-        token: 텔레그램 봇 토큰
-        chat_id: 채팅 ID
-        message: 전송할 메시지
-        
-    Returns:
-        성공 여부 (bool)
-    """
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "HTML"
-    }
-    
-    try:
-        response = requests.post(url, json=payload, timeout=10)
-        response.raise_for_status()
-        return True
-    except Exception as e:
-        print(f"텔레그램 메시지 전송 실패: {e}")
-        return False
+    return "\n".join(lines).rstrip()
 
-def format_news_message(entry, keyword):
-    """
-    뉴스 항목을 텔레그램 메시지 형식으로 포맷팅합니다.
-    
-    Args:
-        entry: feedparser 항목 객체
-        keyword: 검색 키워드 (제목에 표시용)
-        
-    Returns:
-        포맷팅된 메시지 문자열
-    """
-    title = entry.get('title', '제목 없음')
-    link = entry.get('link', '')
-    published = entry.get('published', '')
-    
-    # 발행/수정 시간을 포맷팅
-    published_time = parse_entry_time(entry)
-    if published_time:
-        published = published_time.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-    
-    # 제목에 키워드 표시
-    message = f"<b>[{keyword} 뉴스] {title}</b>\n\n"
-    message += f"발행 시간: {published}\n"
-    message += f"링크: {link}"
-    
-    return message
 
+def format_failure_alert(keyword: str, failures: list) -> str:
+    safe_keyword = html.escape(keyword)
+    lines = [f"⚠️ 전송 실패 알림: {safe_keyword}", ""]
+    for item in failures:
+        lines.append(f"- {html.escape(item)}")
+    return "\n".join(lines).rstrip()
+
+
+# =========================
+# Main
+# =========================
 def main():
-    """
-    메인 실행 함수
-    """
-    # 환경변수에서 설정값 가져오기
-    telegram_token = os.environ.get('TELEGRAM_TOKEN')
-    telegram_chat_id = os.environ.get('CHAT_ID')
-    keywords_str = os.environ.get('KEYWORD', 'Discord')  # 기본값: Discord
-    
-    # 필수 환경변수 확인
-    if not telegram_token:
-        print("오류: TELEGRAM_TOKEN 환경변수가 설정되지 않았습니다.")
-        return
-    
-    if not telegram_chat_id:
-        print("오류: CHAT_ID 환경변수가 설정되지 않았습니다.")
-        return
-    
-    # KEYWORD 환경변수를 콤마(,) 기준으로 분리하여 리스트로 만들기
-    keywords = [kw.strip() for kw in keywords_str.split(',') if kw.strip()]
-    
+    telegram_token = os.environ.get("TELEGRAM_TOKEN")
+    telegram_chat_id = os.environ.get("CHAT_ID")
+    slack_webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
+    keywords_str = os.environ.get("KEYWORD", "")
+
+    if not telegram_token or not telegram_chat_id:
+        raise RuntimeError("TELEGRAM_TOKEN / CHAT_ID 환경변수가 필요합니다.")
+
+    keywords = [k.strip() for k in keywords_str.split(",") if k.strip()]
     if not keywords:
-        print("오류: KEYWORD 환경변수에 유효한 키워드가 없습니다.")
-        return
-    
-    print(f"검색할 키워드: {keywords}")
-    
-    # 전체 통계
-    total_success = 0
-    total_news = 0
-    
-    # 각 키워드별로 뉴스 검색 및 전송
+        raise RuntimeError("KEYWORD 환경변수가 비어 있습니다.")
+
+    print(f"🔍 키워드: {keywords}")
+
     for keyword in keywords:
-        print(f"\n키워드 '{keyword}'로 뉴스를 검색합니다...")
-        
-        # 구글 뉴스 RSS 가져오기
-        feed = get_google_news_rss(keyword)
-        
-        if not feed:
-            print(f"키워드 '{keyword}': RSS 피드를 가져올 수 없습니다.")
+        print(f"\n▶ 뉴스 수집: {keyword}")
+        entries = get_google_news(keyword)
+
+        if not entries:
+            print("  - 뉴스 없음")
             continue
-        
-        # 최근 15분 이내 뉴스 필터링
-        recent_news = filter_recent_news(feed, minutes=15)
-        
-        if not recent_news:
-            print(f"키워드 '{keyword}': 최근 15분 이내 발행된 뉴스가 없습니다.")
-            continue
-        
-        print(f"키워드 '{keyword}': 최근 15분 이내 뉴스 {len(recent_news)}개를 찾았습니다.")
-        
-        # 각 뉴스를 텔레그램으로 전송
-        success_count = 0
-        for entry in recent_news:
-            message = format_news_message(entry, keyword)
-            
-            if send_telegram_message(telegram_token, telegram_chat_id, message):
-                success_count += 1
-                print(f"뉴스 전송 성공: {entry.get('title', '제목 없음')}")
-            else:
-                print(f"뉴스 전송 실패: {entry.get('title', '제목 없음')}")
-        
-        total_success += success_count
-        total_news += len(recent_news)
-        print(f"키워드 '{keyword}': {success_count}/{len(recent_news)}개 뉴스 전송 완료.")
-    
-    print(f"\n전체 요약: 총 {total_success}/{total_news}개 뉴스 전송 완료.")
+
+        # 상위 3건만 사용 (원하면 숫자 조절)
+        MAX_ITEMS = int(os.environ.get("MAX_ITEMS", 3))
+        entries = entries[:MAX_ITEMS]
+
+        # Telegram
+        tg_message = format_digest(keyword, entries, for_telegram=True)
+        failures = []
+        try:
+            send_telegram_message(telegram_token, telegram_chat_id, tg_message)
+            print(f"  ✅ Telegram 전송 ({len(entries)}건)")
+        except Exception as exc:
+            print(f"  ❌ Telegram 전송 실패: {exc}")
+            failures.append(f"Telegram 전송 실패: {exc}")
+
+        # Slack (Webhook 없으면 스킵)
+        if slack_webhook_url:
+            slack_message = format_digest(keyword, entries, for_telegram=False)
+            try:
+                send_slack_message(slack_webhook_url, slack_message)
+                print(f"  ✅ Slack 전송 ({len(entries)}건)")
+            except Exception as exc:
+                print(f"  ❌ Slack 전송 실패: {exc}")
+                failures.append(f"Slack 전송 실패: {exc}")
+
+        if failures:
+            alert_message = format_failure_alert(keyword, failures)
+            try:
+                send_telegram_message(telegram_token, telegram_chat_id, alert_message)
+                print("  📣 실패 알림 전송 (Telegram)")
+            except Exception as exc:
+                print(f"  ❌ 실패 알림 전송 실패: {exc}")
+
+    print("\n🎉 모든 키워드 처리 완료")
+
 
 if __name__ == "__main__":
     main()
-
