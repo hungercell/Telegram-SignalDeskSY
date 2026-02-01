@@ -7,6 +7,7 @@ Telegram / Slack 동일한 요약 포맷으로 전송
 """
 
 import os
+import json
 import html
 import requests
 import feedparser
@@ -123,6 +124,42 @@ def format_failure_alert(keyword: str, failures: list) -> str:
     return "\n".join(lines).rstrip()
 
 
+def load_sent_ids(path: str) -> dict:
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        sent_map = payload.get("sent", {})
+        if isinstance(sent_map, dict):
+            return sent_map
+        sent_ids = payload.get("sent_ids", [])
+        if isinstance(sent_ids, list):
+            return {entry_id: None for entry_id in sent_ids}
+    except Exception as exc:
+        print(f"  - 전송 기록 읽기 실패: {exc}")
+    return {}
+
+
+def save_sent_ids(path: str, sent_map: dict):
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"sent": sent_map}, f, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        print(f"  - 전송 기록 저장 실패: {exc}")
+
+
+def get_entry_id(entry):
+    raw_id = entry.get("id") or entry.get("guid") or entry.get("link")
+    if raw_id:
+        return raw_id
+    title = entry.get("title", "")
+    published = entry.get("published", "") or entry.get("updated", "")
+    if title or published:
+        return f"{title}|{published}"
+    return None
+
+
 # =========================
 # Main
 # =========================
@@ -131,6 +168,8 @@ def main():
     telegram_chat_id = os.environ.get("CHAT_ID")
     slack_webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
     keywords_str = os.environ.get("KEYWORD", "")
+    sent_state_path = os.environ.get("SENT_STATE_PATH", ".sent_articles.json")
+    retention_days = int(os.environ.get("SENT_RETENTION_DAYS", 7))
 
     if not telegram_token or not telegram_chat_id:
         raise RuntimeError("TELEGRAM_TOKEN / CHAT_ID 환경변수가 필요합니다.")
@@ -141,6 +180,24 @@ def main():
 
     print(f"🔍 키워드: {keywords}")
 
+    sent_map = load_sent_ids(sent_state_path)
+    now_utc = datetime.now(timezone.utc)
+    retention_cutoff = now_utc - timedelta(days=retention_days)
+    pruned_map = {}
+    for entry_id, ts in sent_map.items():
+        if not ts:
+            pruned_map[entry_id] = ts
+            continue
+        try:
+            parsed = datetime.fromisoformat(ts)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            if parsed >= retention_cutoff:
+                pruned_map[entry_id] = ts
+        except Exception:
+            pruned_map[entry_id] = ts
+    sent_map = pruned_map
+
     for keyword in keywords:
         print(f"\n▶ 뉴스 수집: {keyword}")
         entries = get_google_news(keyword)
@@ -149,9 +206,30 @@ def main():
             print("  - 뉴스 없음")
             continue
 
+        # 최근 1시간 이내 + 중복 제거
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=1)
+        filtered_entries = []
+        for entry in entries:
+            published_time = parse_entry_time(entry)
+            if not published_time:
+                continue
+            if published_time < cutoff_time:
+                continue
+
+            entry_id = get_entry_id(entry)
+            if entry_id and entry_id in sent_map:
+                continue
+
+            filtered_entries.append(entry)
+
+        if not filtered_entries:
+            print("  - 최근 1시간 이내 새 기사 없음")
+            continue
+
         # 상위 3건만 사용 (원하면 숫자 조절)
         MAX_ITEMS = int(os.environ.get("MAX_ITEMS", 3))
-        entries = entries[:MAX_ITEMS]
+        entries = filtered_entries[:MAX_ITEMS]
+        entry_ids = [get_entry_id(entry) for entry in entries]
 
         # Telegram
         tg_message = format_digest(keyword, entries, for_telegram=True)
@@ -159,6 +237,10 @@ def main():
         try:
             send_telegram_message(telegram_token, telegram_chat_id, tg_message)
             print(f"  ✅ Telegram 전송 ({len(entries)}건)")
+            for entry_id in entry_ids:
+                if entry_id and entry_id not in sent_map:
+                    sent_map[entry_id] = datetime.now(timezone.utc).isoformat()
+            save_sent_ids(sent_state_path, sent_map)
         except Exception as exc:
             print(f"  ❌ Telegram 전송 실패: {exc}")
             failures.append(f"Telegram 전송 실패: {exc}")
@@ -181,6 +263,7 @@ def main():
             except Exception as exc:
                 print(f"  ❌ 실패 알림 전송 실패: {exc}")
 
+    save_sent_ids(sent_state_path, sent_map)
     print("\n🎉 모든 키워드 처리 완료")
 
 

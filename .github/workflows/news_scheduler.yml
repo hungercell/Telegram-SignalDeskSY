@@ -21,6 +21,14 @@ jobs:
       - name: 라이브러리 설치
         run: |
           pip install requests feedparser schedule
+
+      - name: 전송 기록 캐시 복원
+        uses: actions/cache@v3
+        with:
+          path: .sent_articles.json
+          key: sent-articles-${{ github.run_id }}
+          restore-keys: |
+            sent-articles-
       
       - name: 뉴스 봇 실행
         env:
