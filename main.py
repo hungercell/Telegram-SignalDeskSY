@@ -83,18 +83,15 @@ def format_digest(keyword: str, entries: list, for_telegram=False) -> str:
     - Telegram: <a href="url">title</a>
     """
     safe_keyword = html.escape(keyword)
-    lines = [f"🗞️ [뉴스 요약] {safe_keyword} (총 {len(entries)}건)", ""]
+    lines = [f"🗞️ [뉴스 요약] {safe_keyword}", ""]
 
     kst = timezone(timedelta(hours=9))
 
     for idx, entry in enumerate(entries, start=1):
         raw_title = entry.get("title", "제목 없음")
         raw_link = entry.get("link", "")
-        raw_source = entry.get("source", {}).get("title", "출처 미상")
-
         title = html.escape(raw_title)
         link = raw_link
-        source = html.escape(raw_source)
 
         published_time = parse_entry_time(entry)
         if published_time:
@@ -110,7 +107,6 @@ def format_digest(keyword: str, entries: list, for_telegram=False) -> str:
             title_line = f"{idx}) <{safe_link}|{safe_title}> | {time_str}"
 
         lines.append(title_line)
-        lines.append(f"   └ {source}")
         lines.append("")
 
     return "\n".join(lines).rstrip()
