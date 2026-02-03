@@ -120,6 +120,14 @@ def format_failure_alert(keyword: str, failures: list) -> str:
     return "\n".join(lines).rstrip()
 
 
+def normalize_keyword(value: str) -> str:
+    normalized = value.strip().lower()
+    synonym_map = {
+        "naver": "네이버",
+    }
+    return synonym_map.get(normalized, normalized)
+
+
 def load_sent_ids(path: str) -> dict:
     if not os.path.exists(path):
         return {}
@@ -164,6 +172,7 @@ def main():
     telegram_chat_id = os.environ.get("CHAT_ID")
     slack_webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
     keywords_str = os.environ.get("KEYWORD", "")
+    slack_keywords_str = os.environ.get("SLACK_KEYWORDS", "")
     sent_state_path = os.environ.get("SENT_STATE_PATH", ".sent_articles.json")
     retention_days = int(os.environ.get("SENT_RETENTION_DAYS", 7))
 
@@ -173,6 +182,15 @@ def main():
     keywords = [k.strip() for k in keywords_str.split(",") if k.strip()]
     if not keywords:
         raise RuntimeError("KEYWORD 환경변수가 비어 있습니다.")
+
+    slack_keywords = {
+        normalize_keyword(k)
+        for k in slack_keywords_str.split(",")
+        if k.strip()
+    }
+    if not slack_keywords:
+        # SLACK_KEYWORDS가 비어 있으면 전체 키워드로 전송(기존 동작 유지)
+        slack_keywords = {normalize_keyword(k) for k in keywords}
 
     print(f"🔍 키워드: {keywords}")
 
@@ -241,8 +259,9 @@ def main():
             print(f"  ❌ Telegram 전송 실패: {exc}")
             failures.append(f"Telegram 전송 실패: {exc}")
 
-        # Slack (Webhook 없으면 스킵)
-        if slack_webhook_url:
+        # Slack (Webhook 없으면 스킵) - SLACK_KEYWORDS로 제한
+        normalized_keyword = normalize_keyword(keyword)
+        if slack_webhook_url and normalized_keyword in slack_keywords:
             slack_message = format_digest(keyword, entries, for_telegram=False)
             try:
                 send_slack_message(slack_webhook_url, slack_message)
@@ -250,6 +269,8 @@ def main():
             except Exception as exc:
                 print(f"  ❌ Slack 전송 실패: {exc}")
                 failures.append(f"Slack 전송 실패: {exc}")
+        elif slack_webhook_url:
+            print(f"  ⏭️ Slack 전송 제외(키워드): {keyword}")
 
         if failures:
             alert_message = format_failure_alert(keyword, failures)
