@@ -36,4 +36,5 @@ jobs:
           CHAT_ID: ${{ secrets.CHAT_ID }}
           KEYWORD: ${{ secrets.KEYWORD }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_KEYWORDS: ${{ secrets.SLACK_KEYWORDS }}
         run: python main.py
