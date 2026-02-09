@@ -15,6 +15,7 @@ from urllib.parse import quote_plus
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from calendar import timegm
+from typing import List, Dict
 
 
 # =========================
@@ -37,7 +38,8 @@ def send_telegram_message(token: str, chat_id: str, text: str):
         "parse_mode": "HTML",
         "disable_web_page_preview": True
     }
-    r = requests.post(url, json=payload, timeout=10)
+    headers = {"Content-Type": "application/json; charset=utf-8"}
+    r = requests.post(url, json=payload, headers=headers, timeout=10)
     r.raise_for_status()
 
 
@@ -82,7 +84,7 @@ def format_digest(keyword: str, entries: list, for_telegram=False) -> str:
     - Slack: <url|title>
     - Telegram: <a href="url">title</a>
     """
-    safe_keyword = html.escape(keyword)
+    safe_keyword = html.escape(keyword, quote=False)
     lines = [f"🗞️ [뉴스 요약] {safe_keyword}", ""]
 
     kst = timezone(timedelta(hours=9))
@@ -90,7 +92,8 @@ def format_digest(keyword: str, entries: list, for_telegram=False) -> str:
     for idx, entry in enumerate(entries, start=1):
         raw_title = entry.get("title", "제목 없음")
         raw_link = entry.get("link", "")
-        title = html.escape(raw_title)
+        # HTML 특수문자만 이스케이프 (quote=False로 따옴표는 유지)
+        title = html.escape(raw_title, quote=False)
         link = raw_link
 
         published_time = parse_entry_time(entry)
@@ -100,6 +103,7 @@ def format_digest(keyword: str, entries: list, for_telegram=False) -> str:
             time_str = "시간 미상"
 
         if for_telegram:
+            # URL은 이미 인코딩되어 있으므로 그대로 사용
             title_line = f'{idx}) <a href="{link}">{title}</a> | {time_str}'
         else:
             safe_title = title.replace("|", "¦").replace(">", "›")
@@ -113,10 +117,10 @@ def format_digest(keyword: str, entries: list, for_telegram=False) -> str:
 
 
 def format_failure_alert(keyword: str, failures: list) -> str:
-    safe_keyword = html.escape(keyword)
+    safe_keyword = html.escape(keyword, quote=False)
     lines = [f"⚠️ 전송 실패 알림: {safe_keyword}", ""]
     for item in failures:
-        lines.append(f"- {html.escape(item)}")
+        lines.append(f"- {html.escape(item, quote=False)}")
     return "\n".join(lines).rstrip()
 
 
@@ -165,6 +169,147 @@ def get_entry_id(entry):
 
 
 # =========================
+# 한국 공휴일 체크
+# =========================
+def is_korean_holiday(date: datetime, additional_holidays: List[str] = None) -> bool:
+    """
+    한국 공휴일 체크 (KST 기준)
+    고정 공휴일 + 환경변수로 지정한 추가 공휴일 체크
+    추가 공휴일은 "YYYY-MM-DD" 형식의 문자열 리스트
+    """
+    kst = timezone(timedelta(hours=9))
+    kst_date = date.astimezone(kst)
+    year = kst_date.year
+    month = kst_date.month
+    day = kst_date.day
+    date_str = kst_date.strftime("%Y-%m-%d")
+    
+    # 고정 공휴일
+    fixed_holidays = [
+        (1, 1),   # 신정
+        (3, 1),   # 삼일절
+        (5, 5),   # 어린이날
+        (6, 6),   # 현충일
+        (8, 15),  # 광복절
+        (10, 3),  # 개천절
+        (10, 9),  # 한글날
+        (12, 25), # 크리스마스
+    ]
+    
+    if (month, day) in fixed_holidays:
+        return True
+    
+    # 부처님오신날 (음력 4월 8일, 매년 다름)
+    # 2024년: 5월 15일, 2025년: 5월 5일 등
+    # 여기서는 간단하게 처리 (필요시 환경변수로 지정)
+    buddha_birthdays = {
+        2024: (5, 15),
+        2025: (5, 5),
+        2026: (5, 24),
+    }
+    if (month, day) == buddha_birthdays.get(year):
+        return True
+    
+    # 환경변수로 지정한 추가 공휴일 체크 (설날, 추석 등)
+    if additional_holidays and date_str in additional_holidays:
+        return True
+    
+    return False
+
+
+# =========================
+# Slack 발송 가능 시간 체크
+# =========================
+def can_send_to_slack(now: datetime = None, additional_holidays: List[str] = None) -> bool:
+    """
+    Slack 발송 가능 여부 체크 (KST 기준)
+    - 주말 (토요일, 일요일) 제한
+    - 한국 공휴일 제한
+    - 밤 11시 ~ 오전 5시 제한
+    """
+    kst = timezone(timedelta(hours=9))
+    if now is None:
+        now = datetime.now(timezone.utc)
+    kst_now = now.astimezone(kst)
+    
+    # 주말 체크 (토요일=5, 일요일=6)
+    weekday = kst_now.weekday()
+    if weekday >= 5:  # 토요일 또는 일요일
+        return False
+    
+    # 공휴일 체크
+    if is_korean_holiday(kst_now, additional_holidays):
+        return False
+    
+    # 시간대 체크 (23:00 ~ 05:00)
+    hour = kst_now.hour
+    if hour >= 23 or hour < 5:
+        return False
+    
+    return True
+
+
+# =========================
+# Slack 메시지 큐 관리
+# =========================
+def load_slack_queue(path: str) -> List[Dict]:
+    """슬랙 메시지 큐 로드"""
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("queue", [])
+    except Exception as exc:
+        print(f"  - 슬랙 큐 읽기 실패: {exc}")
+        return []
+
+
+def save_slack_queue(path: str, queue: List[Dict]):
+    """슬랙 메시지 큐 저장"""
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"queue": queue}, f, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        print(f"  - 슬랙 큐 저장 실패: {exc}")
+
+
+def add_to_slack_queue(path: str, keyword: str, message: str, entries_count: int):
+    """슬랙 메시지 큐에 추가"""
+    queue = load_slack_queue(path)
+    queue.append({
+        "keyword": keyword,
+        "message": message,
+        "entries_count": entries_count,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    save_slack_queue(path, queue)
+
+
+def send_queued_slack_messages(webhook_url: str, queue_path: str) -> int:
+    """큐에 있는 슬랙 메시지들을 모두 발송하고 큐 비우기"""
+    queue = load_slack_queue(queue_path)
+    if not queue:
+        return 0
+    
+    sent_count = 0
+    for item in queue:
+        try:
+            send_slack_message(webhook_url, item["message"])
+            sent_count += 1
+            print(f"  ✅ 큐 메시지 발송: {item['keyword']} ({item['entries_count']}건)")
+        except Exception as exc:
+            print(f"  ❌ 큐 메시지 발송 실패 ({item['keyword']}): {exc}")
+    
+    # 발송 완료 후 큐 비우기
+    if sent_count > 0:
+        save_slack_queue(queue_path, [])
+        print(f"  📦 큐에서 {sent_count}개 메시지 발송 완료")
+    
+    return sent_count
+
+
+# =========================
 # Main
 # =========================
 def main():
@@ -174,7 +319,12 @@ def main():
     keywords_str = os.environ.get("KEYWORD", "")
     slack_keywords_str = os.environ.get("SLACK_KEYWORDS", "")
     sent_state_path = os.environ.get("SENT_STATE_PATH", ".sent_articles.json")
+    slack_queue_path = os.environ.get("SLACK_QUEUE_PATH", ".slack_queue.json")
     retention_days = int(os.environ.get("SENT_RETENTION_DAYS", 7))
+    # 추가 공휴일 (설날, 추석 등) - "YYYY-MM-DD" 형식, 쉼표로 구분
+    # 예: "2024-02-09,2024-02-10,2024-02-11,2024-09-15,2024-09-16,2024-09-17"
+    additional_holidays_str = os.environ.get("ADDITIONAL_HOLIDAYS", "")
+    additional_holidays = [d.strip() for d in additional_holidays_str.split(",") if d.strip()] if additional_holidays_str else []
 
     if not telegram_token or not telegram_chat_id:
         raise RuntimeError("TELEGRAM_TOKEN / CHAT_ID 환경변수가 필요합니다.")
@@ -263,12 +413,21 @@ def main():
         normalized_keyword = normalize_keyword(keyword)
         if slack_webhook_url and normalized_keyword in slack_keywords:
             slack_message = format_digest(keyword, entries, for_telegram=False)
-            try:
-                send_slack_message(slack_webhook_url, slack_message)
-                print(f"  ✅ Slack 전송 ({len(entries)}건)")
-            except Exception as exc:
-                print(f"  ❌ Slack 전송 실패: {exc}")
-                failures.append(f"Slack 전송 실패: {exc}")
+            
+            # Slack 발송 가능 시간 체크
+            if can_send_to_slack(additional_holidays=additional_holidays):
+                try:
+                    send_slack_message(slack_webhook_url, slack_message)
+                    print(f"  ✅ Slack 전송 ({len(entries)}건)")
+                except Exception as exc:
+                    print(f"  ❌ Slack 전송 실패: {exc}")
+                    failures.append(f"Slack 전송 실패: {exc}")
+            else:
+                # 발송 제한 시간이면 큐에 저장
+                add_to_slack_queue(slack_queue_path, keyword, slack_message, len(entries))
+                kst = timezone(timedelta(hours=9))
+                kst_now = datetime.now(timezone.utc).astimezone(kst)
+                print(f"  ⏸️ Slack 발송 제한 시간 - 큐에 저장 ({len(entries)}건, 현재: {kst_now.strftime('%Y-%m-%d %H:%M KST')})")
         elif slack_webhook_url:
             print(f"  ⏭️ Slack 전송 제외(키워드): {keyword}")
 
@@ -281,6 +440,13 @@ def main():
                 print(f"  ❌ 실패 알림 전송 실패: {exc}")
 
     save_sent_ids(sent_state_path, sent_map)
+    
+    # Slack 큐에 있는 메시지들 발송 (발송 가능 시간이면)
+    if slack_webhook_url and can_send_to_slack(additional_holidays=additional_holidays):
+        queued_count = send_queued_slack_messages(slack_webhook_url, slack_queue_path)
+        if queued_count > 0:
+            print(f"\n📦 큐에 있던 {queued_count}개 Slack 메시지 발송 완료")
+    
     print("\n🎉 모든 키워드 처리 완료")
 
 
