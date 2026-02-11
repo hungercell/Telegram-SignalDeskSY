@@ -274,37 +274,50 @@ def save_slack_queue(path: str, queue: List[Dict]):
         print(f"  - 슬랙 큐 저장 실패: {exc}")
 
 
-def add_to_slack_queue(path: str, keyword: str, message: str, entries_count: int):
-    """슬랙 메시지 큐에 추가"""
+def add_to_slack_queue(path: str, keyword: str, message: str, entries_count: int, webhook_url: str):
+    """슬랙 메시지 큐에 추가 (웹훅 URL 포함)"""
     queue = load_slack_queue(path)
     queue.append({
         "keyword": keyword,
         "message": message,
         "entries_count": entries_count,
+        "webhook_url": webhook_url,
         "timestamp": datetime.now(timezone.utc).isoformat()
     })
     save_slack_queue(path, queue)
 
 
-def send_queued_slack_messages(webhook_url: str, queue_path: str) -> int:
-    """큐에 있는 슬랙 메시지들을 모두 발송하고 큐 비우기"""
+def send_queued_slack_messages(queue_path: str) -> int:
+    """큐에 있는 슬랙 메시지들을 모두 발송하고 큐 비우기 (각 메시지의 webhook_url 사용)"""
     queue = load_slack_queue(queue_path)
     if not queue:
         return 0
     
     sent_count = 0
+    failed_items = []
+    
     for item in queue:
+        webhook_url = item.get("webhook_url")
+        if not webhook_url:
+            print(f"  ⚠️ 큐 메시지에 webhook_url이 없음: {item.get('keyword', '알 수 없음')}")
+            continue
+            
         try:
             send_slack_message(webhook_url, item["message"])
             sent_count += 1
             print(f"  ✅ 큐 메시지 발송: {item['keyword']} ({item['entries_count']}건)")
         except Exception as exc:
             print(f"  ❌ 큐 메시지 발송 실패 ({item['keyword']}): {exc}")
+            # 실패한 항목은 다시 큐에 넣기
+            failed_items.append(item)
     
-    # 발송 완료 후 큐 비우기
-    if sent_count > 0:
-        save_slack_queue(queue_path, [])
-        print(f"  📦 큐에서 {sent_count}개 메시지 발송 완료")
+    # 실패한 항목만 큐에 다시 저장 (발송 성공한 항목은 제거)
+    if sent_count > 0 or failed_items:
+        save_slack_queue(queue_path, failed_items)
+        if sent_count > 0:
+            print(f"  📦 큐에서 {sent_count}개 메시지 발송 완료")
+        if failed_items:
+            print(f"  ⚠️ {len(failed_items)}개 메시지 발송 실패 - 큐에 유지")
     
     return sent_count
 
@@ -315,7 +328,19 @@ def send_queued_slack_messages(webhook_url: str, queue_path: str) -> int:
 def main():
     telegram_token = os.environ.get("TELEGRAM_TOKEN")
     telegram_chat_id = os.environ.get("CHAT_ID")
-    slack_webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
+    
+    # 여러 슬랙 웹훅 URL 지원 (쉼표로 구분)
+    # SLACK_WEBHOOK_URLS가 있으면 우선 사용, 없으면 SLACK_WEBHOOK_URL 사용 (하위 호환성)
+    slack_webhook_urls_str = os.environ.get("SLACK_WEBHOOK_URLS", "")
+    slack_webhook_url_legacy = os.environ.get("SLACK_WEBHOOK_URL", "")
+    
+    if slack_webhook_urls_str:
+        slack_webhook_urls = [url.strip() for url in slack_webhook_urls_str.split(",") if url.strip()]
+    elif slack_webhook_url_legacy:
+        slack_webhook_urls = [slack_webhook_url_legacy]
+    else:
+        slack_webhook_urls = []
+    
     keywords_str = os.environ.get("KEYWORD", "")
     slack_keywords_str = os.environ.get("SLACK_KEYWORDS", "")
     sent_state_path = os.environ.get("SENT_STATE_PATH", ".sent_articles.json")
@@ -411,24 +436,27 @@ def main():
 
         # Slack (Webhook 없으면 스킵) - SLACK_KEYWORDS로 제한
         normalized_keyword = normalize_keyword(keyword)
-        if slack_webhook_url and normalized_keyword in slack_keywords:
+        if slack_webhook_urls and normalized_keyword in slack_keywords:
             slack_message = format_digest(keyword, entries, for_telegram=False)
             
             # Slack 발송 가능 시간 체크
             if can_send_to_slack(additional_holidays=additional_holidays):
-                try:
-                    send_slack_message(slack_webhook_url, slack_message)
-                    print(f"  ✅ Slack 전송 ({len(entries)}건)")
-                except Exception as exc:
-                    print(f"  ❌ Slack 전송 실패: {exc}")
-                    failures.append(f"Slack 전송 실패: {exc}")
+                # 모든 슬랙 채널에 발송
+                for webhook_url in slack_webhook_urls:
+                    try:
+                        send_slack_message(webhook_url, slack_message)
+                        print(f"  ✅ Slack 전송 ({len(entries)}건)")
+                    except Exception as exc:
+                        print(f"  ❌ Slack 전송 실패: {exc}")
+                        failures.append(f"Slack 전송 실패: {exc}")
             else:
-                # 발송 제한 시간이면 큐에 저장
-                add_to_slack_queue(slack_queue_path, keyword, slack_message, len(entries))
+                # 발송 제한 시간이면 모든 채널에 대해 큐에 저장
+                for webhook_url in slack_webhook_urls:
+                    add_to_slack_queue(slack_queue_path, keyword, slack_message, len(entries), webhook_url)
                 kst = timezone(timedelta(hours=9))
                 kst_now = datetime.now(timezone.utc).astimezone(kst)
-                print(f"  ⏸️ Slack 발송 제한 시간 - 큐에 저장 ({len(entries)}건, 현재: {kst_now.strftime('%Y-%m-%d %H:%M KST')})")
-        elif slack_webhook_url:
+                print(f"  ⏸️ Slack 발송 제한 시간 - 큐에 저장 ({len(slack_webhook_urls)}개 채널, {len(entries)}건, 현재: {kst_now.strftime('%Y-%m-%d %H:%M KST')})")
+        elif slack_webhook_urls:
             print(f"  ⏭️ Slack 전송 제외(키워드): {keyword}")
 
         if failures:
@@ -442,8 +470,8 @@ def main():
     save_sent_ids(sent_state_path, sent_map)
     
     # Slack 큐에 있는 메시지들 발송 (발송 가능 시간이면)
-    if slack_webhook_url and can_send_to_slack(additional_holidays=additional_holidays):
-        queued_count = send_queued_slack_messages(slack_webhook_url, slack_queue_path)
+    if slack_webhook_urls and can_send_to_slack(additional_holidays=additional_holidays):
+        queued_count = send_queued_slack_messages(slack_queue_path)
         if queued_count > 0:
             print(f"\n📦 큐에 있던 {queued_count}개 Slack 메시지 발송 완료")
     
