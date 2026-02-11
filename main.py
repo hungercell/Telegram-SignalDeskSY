@@ -225,7 +225,7 @@ def can_send_to_slack(now: datetime = None, additional_holidays: List[str] = Non
     Slack 발송 가능 여부 체크 (KST 기준)
     - 주말 (토요일, 일요일) 제한
     - 한국 공휴일 제한
-    - 밤 11시 ~ 오전 5시 제한
+    - 밤 8시 ~ 오전 6시 제한
     """
     kst = timezone(timedelta(hours=9))
     if now is None:
@@ -241,9 +241,9 @@ def can_send_to_slack(now: datetime = None, additional_holidays: List[str] = Non
     if is_korean_holiday(kst_now, additional_holidays):
         return False
     
-    # 시간대 체크 (23:00 ~ 05:00)
+    # 시간대 체크 (20:00 ~ 06:00)
     hour = kst_now.hour
-    if hour >= 23 or hour < 5:
+    if hour >= 20 or hour < 6:
         return False
     
     return True
