@@ -11,8 +11,9 @@ import os
 import json
 import requests
 import feedparser
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 from datetime import datetime
+from calendar import timegm
 import pytz
 import holidays
 
@@ -113,6 +114,71 @@ DEFAULT_SLACK_KEYWORDS = "네이버,스테이블코인"
 MAX_ARTICLES_PER_KEYWORD = 5
 
 
+def get_article_time_kst(entry):
+    """기사 발행 시각을 KST HH:MM으로 반환"""
+    utc = pytz.timezone("UTC")
+    try:
+        if hasattr(entry, "published_parsed") and entry.published_parsed:
+            dt = datetime.fromtimestamp(timegm(entry.published_parsed), tz=utc)
+            return dt.astimezone(KST).strftime("%H:%M")
+        if hasattr(entry, "updated_parsed") and entry.updated_parsed:
+            dt = datetime.fromtimestamp(timegm(entry.updated_parsed), tz=utc)
+            return dt.astimezone(KST).strftime("%H:%M")
+        published = entry.get("published") or entry.get("updated")
+        if published:
+            from email.utils import parsedate_to_datetime
+            parsed = parsedate_to_datetime(published)
+            if parsed.tzinfo is None:
+                parsed = utc.localize(parsed)
+            return parsed.astimezone(KST).strftime("%H:%M")
+    except Exception:
+        pass
+    return "시간 미상"
+
+
+def get_article_source(entry):
+    """기사 출처명 반환 (feedparser source 또는 링크 도메인)"""
+    try:
+        source = entry.get("source")
+        if isinstance(source, dict) and source.get("title"):
+            return source["title"].strip()
+        if hasattr(source, "title"):
+            return getattr(source, "title", "").strip() or ""
+        link = entry.get("link") or entry.get("id") or ""
+        if link:
+            host = urlparse(link).netloc or ""
+            if host.startswith("www."):
+                host = host[4:]
+            return host or "출처 미상"
+    except Exception:
+        pass
+    return "출처 미상"
+
+
+def format_digest(keyword, entries, for_telegram=False):
+    """
+    키워드별 뉴스 요약 메시지 생성
+    형식: 🗞️ [뉴스 요약] 키워드
+          1) 제목 - 출처 | HH:MM
+    """
+    lines = [f"🗞️ [뉴스 요약] {keyword}", ""]
+    for idx, entry in enumerate(entries, start=1):
+        title = entry.get("title", "제목 없음")
+        link = entry.get("link") or entry.get("id") or ""
+        source = get_article_source(entry)
+        time_str = get_article_time_kst(entry)
+        if for_telegram:
+            # HTML: 제목을 링크로
+            line = f'{idx}) <a href="{link}">{title}</a> - {source} | {time_str}'
+        else:
+            # Slack: <url|title> 형식
+            safe_title = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            safe_link = link.replace(">", "›")
+            line = f"{idx}) <{safe_link}|{safe_title}> - {source} | {time_str}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def main():
     telegram_token = os.environ.get("TELEGRAM_TOKEN")
     chat_id = os.environ.get("CHAT_ID")
@@ -156,34 +222,36 @@ def main():
             print(f"  [{keyword}] 새 뉴스 없음")
             continue
 
-        print(f"  [{keyword}] 새 뉴스 {len(new_articles)}건 발견")
+        digest_entries = new_articles[:MAX_ARTICLES_PER_KEYWORD]
+        print(f"  [{keyword}] 새 뉴스 {len(digest_entries)}건 요약 발송")
 
         # 슬랙 발송 여부: 이 키워드가 슬랙용 목록에 있고, 웹훅이 있을 때만
         send_to_slack = bool(slack_webhooks) and (keyword.strip().lower() in slack_keywords)
 
-        for entry in new_articles[:MAX_ARTICLES_PER_KEYWORD]:
-            title = entry.get("title", "제목 없음")
+        # 키워드별 요약 메시지 1통 (🗞️ [뉴스 요약] 키워드 + 1) 제목 - 출처 | HH:MM)
+        telegram_message = format_digest(keyword, digest_entries, for_telegram=True)
+        slack_message = format_digest(keyword, digest_entries, for_telegram=False)
+
+        # Telegram: 모든 키워드 발송 (요약 1통)
+        if telegram_token and chat_id:
+            ok = send_telegram(telegram_token, chat_id, telegram_message)
+            if not ok:
+                print(f"  ❌ Telegram 전송 실패 [{keyword}]")
+
+        # Slack: 슬랙용 키워드이고 업무시간일 때만 (요약 1통)
+        if send_to_slack:
+            if is_business_time():
+                for webhook in slack_webhooks:
+                    ok = send_slack(webhook, slack_message)
+                    if not ok:
+                        print(f"  ❌ Slack 전송 실패 [{keyword}]")
+            else:
+                print(f"  ⏸️ Slack 발송 제한 시간 - 드랍 [{keyword}]")
+
+        for entry in digest_entries:
             link = entry.get("link") or entry.get("id") or ""
-
-            message = f"<b>{title}</b>\n{link}"
-
-            # Telegram: 모든 키워드 발송
-            if telegram_token and chat_id:
-                ok = send_telegram(telegram_token, chat_id, message)
-                if not ok:
-                    print(f"  ❌ Telegram 전송 실패 [{keyword}]")
-
-            # Slack: 슬랙용 키워드이고 업무시간일 때만
-            if send_to_slack:
-                if is_business_time():
-                    for webhook in slack_webhooks:
-                        ok = send_slack(webhook, f"{title}\n{link}")
-                        if not ok:
-                            print(f"  ❌ Slack 전송 실패 [{keyword}]")
-                else:
-                    print(f"  ⏸️ Slack 발송 제한 시간 - 드랍 [{keyword}]")
-
-            sent_articles.append(link)
+            if link:
+                sent_articles.append(link)
 
     save_sent_articles(sent_articles)
 
