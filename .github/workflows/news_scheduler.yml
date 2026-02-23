@@ -3,7 +3,7 @@ name: 뉴스 봇 스케줄러
 on:
   schedule:
     - cron: '*/15 * * * *'  # 15분마다 실행
-  workflow_dispatch:  # 수동 실행 버튼 활성화
+  workflow_dispatch:
 
 jobs:
   send-news:
@@ -12,29 +12,27 @@ jobs:
     steps:
       - name: 저장소 체크아웃
         uses: actions/checkout@v3
-      
+
       - name: Python 설정
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
-      
+
       - name: 라이브러리 설치
         run: |
-          pip install requests feedparser schedule
+          pip install -r requirements.txt
 
       - name: 전송 기록 캐시 복원
         uses: actions/cache@v3
         with:
           path: .sent_articles.json
-          key: sent-articles-${{ github.run_id }}
-          restore-keys: |
-            sent-articles-
-      
+          key: sent-articles-v1
+
       - name: 뉴스 봇 실행
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           KEYWORD: ${{ secrets.KEYWORD }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_URLS: ${{ secrets.SLACK_WEBHOOK_URLS }}
           SLACK_KEYWORDS: ${{ secrets.SLACK_KEYWORDS }}
         run: python main.py
