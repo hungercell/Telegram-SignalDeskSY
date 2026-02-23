@@ -12,7 +12,7 @@ import json
 import requests
 import feedparser
 from urllib.parse import quote_plus, urlparse
-from datetime import datetime
+from datetime import datetime, timedelta
 from calendar import timegm
 import pytz
 import holidays
@@ -119,6 +119,29 @@ DEFAULT_SLACK_KEYWORDS = "네이버,스테이블코인"
 
 MAX_ARTICLES_PER_KEYWORD = 5
 
+# 최근 N시간 이내 발행 기사만 수집 (과거 기사 제외)
+RECENT_HOURS = int(os.environ.get("RECENT_HOURS", "1"))
+
+
+def get_article_published_utc(entry):
+    """기사 발행 시각을 UTC datetime으로 반환 (필터용). 없으면 None."""
+    utc = pytz.timezone("UTC")
+    try:
+        if hasattr(entry, "published_parsed") and entry.published_parsed:
+            return datetime.fromtimestamp(timegm(entry.published_parsed), tz=utc)
+        if hasattr(entry, "updated_parsed") and entry.updated_parsed:
+            return datetime.fromtimestamp(timegm(entry.updated_parsed), tz=utc)
+        published = entry.get("published") or entry.get("updated")
+        if published:
+            from email.utils import parsedate_to_datetime
+            parsed = parsedate_to_datetime(published)
+            if parsed.tzinfo is None:
+                parsed = utc.localize(parsed)
+            return parsed.astimezone(utc)
+    except Exception:
+        pass
+    return None
+
 
 def get_article_time_kst(entry):
     """기사 발행 시각을 KST HH:MM으로 반환"""
@@ -187,7 +210,8 @@ def format_digest(keyword, entries, for_telegram=False):
             safe_link = link.replace(">", "›")
             line = f"{idx}) <{safe_link}|{safe_title}> - {source} | {time_str}"
         lines.append(line)
-    return "\n".join(lines)
+        lines.append("")  # 기사 간 줄바꿈
+    return "\n".join(lines).rstrip()
 
 
 def main():
@@ -223,11 +247,16 @@ def main():
             continue
 
         entries = getattr(feed, "entries", None) or []
+        cutoff_time = datetime.now(pytz.timezone("UTC")) - timedelta(hours=RECENT_HOURS)
         new_articles = []
         for entry in entries:
             link = entry.get("link") or entry.get("id") or ""
-            if link and link not in sent_articles:
-                new_articles.append(entry)
+            if not link or link in sent_articles:
+                continue
+            published_time = get_article_published_utc(entry)
+            if published_time is None or published_time < cutoff_time:
+                continue
+            new_articles.append(entry)
 
         if not new_articles:
             print(f"  [{keyword}] 새 뉴스 없음")
