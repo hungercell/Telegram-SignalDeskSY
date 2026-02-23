@@ -99,8 +99,14 @@ def get_slack_webhooks():
 
 def send_slack(webhook_url, message):
     payload = {"text": message}
-    response = requests.post(webhook_url, json=payload, timeout=10)
-    return response.status_code == 200
+    try:
+        response = requests.post(webhook_url, json=payload, timeout=10)
+        if response.status_code != 200:
+            print(f"  [Slack] HTTP {response.status_code} body: {response.text[:200]}")
+        return response.status_code == 200
+    except Exception as e:
+        print(f"  [Slack] 전송 예외: {e}")
+        return False
 
 
 # =========================
@@ -171,8 +177,13 @@ def format_digest(keyword, entries, for_telegram=False):
             # HTML: 제목을 링크로
             line = f'{idx}) <a href="{link}">{title}</a> - {source} | {time_str}'
         else:
-            # Slack: <url|title> 형식
-            safe_title = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            # Slack: <url|title> 형식 (제목에 | 있으면 파싱 깨짐 → 치환)
+            safe_title = (
+                title.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("|", "¦")
+            )
             safe_link = link.replace(">", "›")
             line = f"{idx}) <{safe_link}|{safe_title}> - {source} | {time_str}"
         lines.append(line)
