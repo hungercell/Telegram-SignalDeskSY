@@ -4,7 +4,7 @@
 """
 Google News RSS → Telegram / Slack 알림
 - Telegram: 항상 발송
-- Slack: 업무시간(평일 06~20시 KST, 비공휴일)에만 발송
+- Slack: 업무시간(평일 06~20시 KST, 비공휴일)에만 발송, 3시간에 한 번만 발송
 """
 
 import os
@@ -22,6 +22,8 @@ import holidays
 # =========================
 
 SENT_FILE = os.environ.get("SENT_STATE_PATH", ".sent_articles.json")
+SLACK_THROTTLE_FILE = os.environ.get("SLACK_THROTTLE_STATE_PATH", ".last_slack_sent.json")
+SLACK_THROTTLE_HOURS = 3
 KST = pytz.timezone("Asia/Seoul")
 kr_holidays = holidays.KR()
 
@@ -62,6 +64,30 @@ def is_business_time():
         return False
 
     return True
+
+
+def load_last_slack_sent_utc():
+    """마지막 슬랙 발송 시각(UTC epoch) 반환. 없으면 0."""
+    if os.path.exists(SLACK_THROTTLE_FILE):
+        try:
+            with open(SLACK_THROTTLE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return float(data.get("last_sent_utc", 0))
+        except Exception:
+            pass
+    return 0.0
+
+
+def save_last_slack_sent_utc(utc_epoch):
+    with open(SLACK_THROTTLE_FILE, "w", encoding="utf-8") as f:
+        json.dump({"last_sent_utc": utc_epoch}, f)
+
+
+def can_send_slack_now():
+    """3시간에 한 번만 슬랙 발송 가능 여부."""
+    now_utc = datetime.now(pytz.timezone("UTC")).timestamp()
+    last = load_last_slack_sent_utc()
+    return (now_utc - last) >= (SLACK_THROTTLE_HOURS * 3600)
 
 
 # =========================
@@ -231,6 +257,7 @@ def main():
     print(f"웹훅 URL 개수: {len(slack_webhooks)}")
 
     sent_articles = load_sent_articles()
+    slack_sent_this_run = False
 
     if not keywords:
         print("KEYWORD 없음")
@@ -277,20 +304,26 @@ def main():
             if not ok:
                 print(f"  ❌ Telegram 전송 실패 [{keyword}]")
 
-        # Slack: 슬랙용 키워드이고 업무시간일 때만 (요약 1통)
+        # Slack: 슬랙용 키워드이고 업무시간일 때만 (요약 1통), 3시간에 한 번만
         if send_to_slack:
-            if is_business_time():
+            if not is_business_time():
+                print(f"  ⏸️ Slack 발송 제한 시간 - 드랍 [{keyword}]")
+            elif not can_send_slack_now():
+                print(f"  ⏸️ Slack 3시간 제한 - 드랍 [{keyword}]")
+            else:
                 for webhook in slack_webhooks:
                     ok = send_slack(webhook, slack_message)
                     if not ok:
                         print(f"  ❌ Slack 전송 실패 [{keyword}]")
-            else:
-                print(f"  ⏸️ Slack 발송 제한 시간 - 드랍 [{keyword}]")
+                slack_sent_this_run = True
 
         for entry in digest_entries:
             link = entry.get("link") or entry.get("id") or ""
             if link:
                 sent_articles.append(link)
+
+    if slack_sent_this_run:
+        save_last_slack_sent_utc(datetime.now(pytz.timezone("UTC")).timestamp())
 
     save_sent_articles(sent_articles)
 
