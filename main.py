@@ -194,11 +194,10 @@ def format_digest(keyword, entries, for_telegram=False):
     for idx, entry in enumerate(entries, start=1):
         title = entry.get("title", "제목 없음")
         link = entry.get("link") or entry.get("id") or ""
-        source = get_article_source(entry)
         time_str = get_article_time_kst(entry)
         if for_telegram:
-            # HTML: 제목을 링크로
-            line = f'{idx}) <a href="{link}">{title}</a> - {source} | {time_str}'
+            # HTML: 제목을 링크로 (출처는 제목에 포함되는 경우가 있어 생략)
+            line = f'{idx}) <a href="{link}">{title}</a> | {time_str}'
         else:
             # Slack: <url|title> 형식 (제목에 | 있으면 파싱 깨짐 → 치환)
             safe_title = (
@@ -208,7 +207,7 @@ def format_digest(keyword, entries, for_telegram=False):
                 .replace("|", "¦")
             )
             safe_link = link.replace(">", "›")
-            line = f"{idx}) <{safe_link}|{safe_title}> - {source} | {time_str}"
+            line = f"{idx}) <{safe_link}|{safe_title}> | {time_str}"
         lines.append(line)
         lines.append("")  # 기사 간 줄바꿈
     return "\n".join(lines).rstrip()
