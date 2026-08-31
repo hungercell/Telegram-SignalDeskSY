@@ -9,6 +9,7 @@ Google News RSS → Telegram / Slack 알림
 
 import os
 import json
+import re
 import requests
 import feedparser
 from urllib.parse import quote_plus, urlparse
@@ -145,6 +146,25 @@ DEFAULT_SLACK_KEYWORDS = "네이버,스테이블코인"
 
 MAX_ARTICLES_PER_KEYWORD = 5
 
+BLOCKED_SOURCES = {"platea magazine"}
+
+# 단일 단어가 아닌 투자 판단 유도형 복합 표현만 차단한다.
+INVESTMENT_PROMOTION_PATTERNS = (
+    r"목표\s*주가",
+    r"목표가\s*(상향|하향|제시)",
+    r"(강력\s*)?매수\s*(추천|의견)",
+    r"투자\s*의견\s*(매수|강력\s*매수)",
+    r"(오늘의\s*)?급등주",
+    r"상승\s*여력",
+    r"(저평가|유망)\s*(주|주식|종목)",
+    r"주가\s*(전망|예측)",
+    r"(주식|종목)\s*(추천|분석)",
+    r"매수\s*(기회|타이밍)",
+    r"price\s*target",
+    r"(stocks?|shares?)\s*to\s*buy",
+    r"(strong\s*)?buy\s*(rating|recommendation)",
+)
+
 # 최근 N시간 이내 발행 기사만 수집 (과거 기사 제외)
 RECENT_HOURS = int(os.environ.get("RECENT_HOURS", "1"))
 
@@ -208,6 +228,24 @@ def get_article_source(entry):
     except Exception:
         pass
     return "출처 미상"
+
+
+def get_article_exclusion_reason(entry):
+    """제외 대상이면 사유 문자열, 통과 대상이면 None을 반환."""
+    source = get_article_source(entry).strip()
+    normalized_source = " ".join(source.casefold().split())
+    if normalized_source in BLOCKED_SOURCES:
+        return f"차단 출처: {source}"
+
+    title = (entry.get("title") or "").strip()
+    # RSS 출처 정보가 누락돼도 제목에 출처명이 붙은 경우 차단한다.
+    if "platea magazine" in title.casefold():
+        return "차단 출처명 포함: Platea Magazine"
+
+    for pattern in INVESTMENT_PROMOTION_PATTERNS:
+        if re.search(pattern, title, flags=re.IGNORECASE):
+            return f"투자 홍보/분석 제목 패턴: {pattern}"
+    return None
 
 
 def format_digest(keyword, entries, for_telegram=False):
@@ -281,6 +319,11 @@ def main():
                 continue
             published_time = get_article_published_utc(entry)
             if published_time is None or published_time < cutoff_time:
+                continue
+            exclusion_reason = get_article_exclusion_reason(entry)
+            if exclusion_reason:
+                title = entry.get("title", "제목 없음")
+                print(f"  [{keyword}] 제외: {exclusion_reason} | {title}")
                 continue
             new_articles.append(entry)
 
