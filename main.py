@@ -146,7 +146,20 @@ DEFAULT_SLACK_KEYWORDS = "네이버,스테이블코인"
 
 MAX_ARTICLES_PER_KEYWORD = 5
 
-BLOCKED_SOURCES = {"platea magazine"}
+BLOCKED_SOURCES = {
+    "platea magazine",
+    "아이보스",
+    "naver blog",
+    "네이버 블로그",
+}
+
+# Google News 제목 끝에 붙는 출처명도 함께 검사한다.
+BLOCKED_TITLE_SOURCE_MARKERS = (
+    "platea magazine",
+    " - 아이보스",
+    " : 네이버 블로그",
+    " - naver blog",
+)
 
 # 단일 단어가 아닌 투자 판단 유도형 복합 표현만 차단한다.
 INVESTMENT_PROMOTION_PATTERNS = (
@@ -238,9 +251,11 @@ def get_article_exclusion_reason(entry):
         return f"차단 출처: {source}"
 
     title = (entry.get("title") or "").strip()
+    normalized_title = " ".join(title.casefold().split())
     # RSS 출처 정보가 누락돼도 제목에 출처명이 붙은 경우 차단한다.
-    if "platea magazine" in title.casefold():
-        return "차단 출처명 포함: Platea Magazine"
+    for marker in BLOCKED_TITLE_SOURCE_MARKERS:
+        if marker in normalized_title:
+            return f"차단 출처명 포함: {marker}"
 
     for pattern in INVESTMENT_PROMOTION_PATTERNS:
         if re.search(pattern, title, flags=re.IGNORECASE):
