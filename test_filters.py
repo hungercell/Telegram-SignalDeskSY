@@ -27,6 +27,36 @@ class ArticleFilterTests(unittest.TestCase):
         )
         self.assertIn("Platea Magazine", reason)
 
+    def test_blocks_iboss_source_and_title_marker(self):
+        self.assertIsNotNone(
+            get_article_exclusion_reason(
+                self.entry(
+                    "네이버 쇼핑 트래픽, SEO세팅부터 순위 최적화까지 - 아이보스",
+                    "아이보스",
+                )
+            )
+        )
+
+    def test_blocks_naver_blog_source(self):
+        self.assertIsNotNone(
+            get_article_exclusion_reason(
+                self.entry(
+                    "생명존중 문화 확산 : 네이버 블로그 - Naver Blog",
+                    "Naver Blog",
+                )
+            )
+        )
+
+    def test_keeps_naver_corporate_press_release(self):
+        self.assertIsNone(
+            get_article_exclusion_reason(
+                self.entry(
+                    "네이버웹툰, 완결 작가까지 웹툰위드로 지원 - NAVERCorp.",
+                    "NAVERCorp.",
+                )
+            )
+        )
+
     def test_blocks_investment_promotion_titles(self):
         titles = [
             "증권가, 삼성전자 목표주가 상향",
