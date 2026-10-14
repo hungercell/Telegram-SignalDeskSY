@@ -11,10 +11,10 @@ jobs:
 
     steps:
       - name: 저장소 체크아웃
-        uses: actions/checkout@v3
+        uses: actions/checkout@v5
 
       - name: Python 설정
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
           python-version: '3.9'
 
@@ -22,8 +22,11 @@ jobs:
         run: |
           pip install -r requirements.txt
 
+      - name: 자동 테스트
+        run: python -m unittest -v
+
       - name: 전송 기록 캐시 복원
-        uses: actions/cache@v3
+        uses: actions/cache@v5
         with:
           path: .sent_articles.json
           key: sent-articles-v1
