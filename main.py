@@ -10,6 +10,7 @@ Google News RSS → Telegram / Slack 알림
 import os
 import json
 import re
+import time
 import requests
 import feedparser
 from urllib.parse import quote_plus, urlparse
@@ -96,7 +97,8 @@ def can_send_slack_now():
 # =========================
 
 
-def send_telegram(token, chat_id, message):
+def send_telegram(token, chat_id, message, max_attempts=3, timeout=30):
+    """Telegram 전송. 일시적 네트워크 오류에는 재시도하고 최종 실패 시 False."""
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     data = {
         "chat_id": chat_id,
@@ -104,8 +106,31 @@ def send_telegram(token, chat_id, message):
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
-    response = requests.post(url, json=data, timeout=10)
-    return response.status_code == 200
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = requests.post(url, json=data, timeout=timeout)
+            if response.status_code == 200:
+                if attempt > 1:
+                    print(f"  [Telegram] 재시도 성공 ({attempt}/{max_attempts})")
+                return True
+
+            print(
+                f"  [Telegram] HTTP {response.status_code} "
+                f"({attempt}/{max_attempts}) body: {response.text[:200]}"
+            )
+            # 인증/요청 형식 오류는 재시도해도 해결되지 않는다.
+            if 400 <= response.status_code < 500:
+                return False
+        except requests.RequestException as e:
+            print(f"  [Telegram] 전송 예외 ({attempt}/{max_attempts}): {e}")
+
+        if attempt < max_attempts:
+            delay = 2 ** (attempt - 1)
+            print(f"  [Telegram] {delay}초 후 재시도")
+            time.sleep(delay)
+
+    return False
 
 
 # =========================
@@ -357,10 +382,11 @@ def main():
         slack_message = format_digest(keyword, digest_entries, for_telegram=False)
 
         # Telegram: 모든 키워드 발송 (요약 1통)
+        telegram_ok = True
         if telegram_token and chat_id:
-            ok = send_telegram(telegram_token, chat_id, telegram_message)
-            if not ok:
-                print(f"  ❌ Telegram 전송 실패 [{keyword}]")
+            telegram_ok = send_telegram(telegram_token, chat_id, telegram_message)
+            if not telegram_ok:
+                print(f"  ❌ Telegram 최종 전송 실패 [{keyword}] - 다음 실행에서 재시도")
 
         # Slack: 슬랙용 키워드이고 업무시간일 때만 (요약 1통), 3시간에 한 번만
         if send_to_slack:
@@ -375,10 +401,12 @@ def main():
                         print(f"  ❌ Slack 전송 실패 [{keyword}]")
                 slack_sent_this_run = True
 
-        for entry in digest_entries:
-            link = entry.get("link") or entry.get("id") or ""
-            if link:
-                sent_articles.append(link)
+        # Telegram 전송이 최종 실패한 기사는 완료 처리하지 않아 다음 실행에서 재시도한다.
+        if telegram_ok:
+            for entry in digest_entries:
+                link = entry.get("link") or entry.get("id") or ""
+                if link:
+                    sent_articles.append(link)
 
     if slack_sent_this_run:
         save_last_slack_sent_utc(datetime.now(pytz.timezone("UTC")).timestamp())
