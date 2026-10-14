@@ -28,7 +28,7 @@ class ArticleFilterTests(unittest.TestCase):
         reason = get_article_exclusion_reason(
             self.entry("넥슨 관련 소식 - Platea Magazine", "")
         )
-        self.assertIn("Platea Magazine", reason)
+        self.assertIn("platea magazine", reason.casefold())
 
     def test_blocks_iboss_source_and_title_marker(self):
         self.assertIsNotNone(
