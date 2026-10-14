@@ -2,8 +2,11 @@
 # -*- coding: utf-8 -*-
 
 import unittest
+from unittest.mock import Mock, patch
 
-from main import get_article_exclusion_reason
+import requests
+
+from main import get_article_exclusion_reason, send_telegram
 
 
 class ArticleFilterTests(unittest.TestCase):
@@ -82,6 +85,51 @@ class ArticleFilterTests(unittest.TestCase):
                 self.assertIsNone(
                     get_article_exclusion_reason(self.entry(title))
                 )
+
+
+class TelegramDeliveryTests(unittest.TestCase):
+    @patch("main.time.sleep")
+    @patch("main.requests.post")
+    def test_retries_timeout_then_succeeds(self, post, sleep):
+        post.side_effect = [
+            requests.exceptions.ReadTimeout("timeout"),
+            Mock(status_code=200),
+        ]
+
+        self.assertTrue(send_telegram("token", "chat", "message"))
+
+        self.assertEqual(post.call_count, 2)
+        post.assert_called_with(
+            "https://api.telegram.org/bottoken/sendMessage",
+            json={
+                "chat_id": "chat",
+                "text": "message",
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=30,
+        )
+        sleep.assert_called_once_with(1)
+
+    @patch("main.time.sleep")
+    @patch("main.requests.post")
+    def test_returns_false_after_three_network_failures(self, post, sleep):
+        post.side_effect = requests.exceptions.ReadTimeout("timeout")
+
+        self.assertFalse(send_telegram("token", "chat", "message"))
+
+        self.assertEqual(post.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+    @patch("main.time.sleep")
+    @patch("main.requests.post")
+    def test_does_not_retry_client_error(self, post, sleep):
+        post.return_value = Mock(status_code=401, text="Unauthorized")
+
+        self.assertFalse(send_telegram("token", "chat", "message"))
+
+        post.assert_called_once()
+        sleep.assert_not_called()
 
 
 if __name__ == "__main__":
