@@ -7,7 +7,7 @@ on:
 
 jobs:
   send-news:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: 저장소 체크아웃
